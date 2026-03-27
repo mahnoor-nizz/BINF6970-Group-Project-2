@@ -1,10 +1,14 @@
 # Stats Asg 3
+
+# --------------- Import Libraries ---------------
 library(VariantAnnotation)
 library(tidyverse)
 library(snpStats)
 
 #BiocManager::install("snpStats")
 
+
+# --------------- Load Files and Explore ---------------
 # Load files
 fto_vcf <- readVcf("fto_chr16.vcf.gz")
 tcf_vcf <- readVcf("tcf_chr10.vcf.gz")
@@ -25,6 +29,16 @@ info(header(fto_vcf))
 
 # Check if AF columns exist like EAS_AF, EUR_AF, SAS_AF etc.
 names(info(fto_vcf))
+
+# Load panel file
+panel <- read.table("integrated_call_samples_v3.20130502.ALL.panel",
+                    header = TRUE,
+                    col.names = c("sample", "pop", "super_pop", "gender"))
+
+# Quick check
+table(panel$super_pop)
+
+# --------------- Filter Data ---------------
 
 # Convert into dataframes
 fto_info <- as.data.frame(info(fto_vcf))
@@ -50,35 +64,17 @@ slc_filtered <- slc_info[slc_keep, desired_cols]
 
 head(tcf_filtered)
 
-# Download the panel file
-# download.file(
-#   "https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/integrated_call_samples_v3.20130502.ALL.panel",
-#   destfile = "integrated_call_samples_v3.20130502.ALL.panel"
-# )
-
-# Load it
-panel <- read.table("integrated_call_samples_v3.20130502.ALL.panel",
-                    header = TRUE,
-                    col.names = c("sample", "pop", "super_pop", "gender"))
-
-# Quick check
-table(panel$super_pop)
-
-# Subset to EUR and SAS
+# Subset panel file to EUR and SAS
 eur_sas_samples <- panel$sample[panel$super_pop %in% c("EUR", "SAS")]
 length(eur_sas_samples)
 
-# Sanity check it matches the VCF
-head(colnames(fto_vcf))
+# Subset variants and samples
+fto_vcf_sub <- fto_vcf[fto_keep, colnames(fto_vcf) %in% eur_sas_samples]
+tcf_vcf_sub <- tcf_vcf[tcf_keep, colnames(tcf_vcf) %in% eur_sas_samples]
+slc_vcf_sub <- slc_vcf[slc_keep, colnames(slc_vcf) %in% eur_sas_samples]
 
-sum(colnames(fto_vcf) %in% eur_sas_samples)
-
-# Get the genotype for the LD
-fto_vcf_sub <- fto_vcf[fto_keep, ]
-tcf_vcf_sub <- tcf_vcf[tcf_keep, ]
-slc_vcf_sub <- slc_vcf[slc_keep, ]
-
-geno(fto_vcf)
+# Check genotype name
+geno(fto_vcf_sub)
 
 # Function to convert the genotype to numbers
 vcf_to_numeric <- function(vcf) {
@@ -95,45 +91,31 @@ vcf_to_numeric <- function(vcf) {
   return(gt_num)
 }
 
-vcf_to_numeric <- function(vcf) {
-  gt <- geno(vcf)$GT
-  gt <- gsub("\\|", "/", gt)  # handle phased genotypes
-  
-  gt_num <- matrix(NA_real_, nrow=nrow(gt), ncol=ncol(gt),
-                   dimnames=dimnames(gt))
-  
-  gt_num[gt == "0/0"] <- 0
-  gt_num[gt %in% c("0/1", "1/0")] <- 1
-  gt_num[gt == "1/1"] <- 2
-  
-  return(gt_num)
-}
-
+# Call function for each gene
 fto_gt <- vcf_to_numeric(fto_vcf_sub)
 tcf_gt <- vcf_to_numeric(tcf_vcf_sub)
 slc_gt <- vcf_to_numeric(slc_vcf_sub)
 
-fto_gt
-tcf_gt
-slc_gt
 
 # Convert to SNPmatrix
 fto_snp <- as(fto_gt, "SnpMatrix")
 tcf_snp <- as(tcf_gt, "SnpMatrix")
 slc_snp <- as(slc_gt, "SnpMatrix")
 
+# Compute R squared
 fto_ld <- ld(fto_snp, depth = ncol(fto_snp), stats = "R.squared")
 tcf_ld <- ld(tcf_snp, depth = ncol(tcf_snp), stats = "R.squared")
 slc_ld <- ld(slc_snp, depth = ncol(slc_snp), stats = "R.squared")
 
-fto_ld
-
+# Summary of R squared value
 summary(as.vector(fto_ld))
 max(fto_ld, na.rm = TRUE)
 
+# Create a df for the heatmap
 ld_df <- as.data.frame(as.table(as.matrix(fto_ld)))
 colnames(ld_df) <- c("SNP1", "SNP2", "R2")
 
+# Plot
 ggplot(ld_df, aes(SNP1, SNP2, fill = R2)) +
   geom_tile() +
   scale_fill_gradient(low = "blue", high = "red") +
