@@ -161,4 +161,5 @@ ggplot(ld_df, aes(SNP1, SNP2, fill = R2)) +
   labs(title = "FTO LD")
 
 # --------------- K means ---------------
+#print
 
