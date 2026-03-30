@@ -2,6 +2,7 @@
 # BINF6970 Assignment 3
 # Analysis of genotype data from 1000 Genomes Project
 
+
 ### === PACKAGES USED ========
 library(VariantAnnotation)
 library(TVTB)
@@ -101,23 +102,17 @@ annotate <- function(vcf) {
   gt_matrix_sub <- gt_matrix[, samples]
   panel_match <- panel[match(colnames(gt_matrix_sub), panel$sample), ]
   
-  sample_meta <- data.frame(sample = panel_match$sample,
-                            pop = panel_match$pop,
-                            super_pop = panel_match$super_pop,
-                            row.names = panel_match$sample)
-  return(list(gt_matrix = gt_matrix_sub,
-              sample_meta = sample_meta))
+  # Store population info as attribute of the matrix
+  attr(gt_matrix_sub, "pop")       <- panel_match$pop
+  attr(gt_matrix_sub, "super_pop") <- panel_match$super_pop
+  
+  return(gt_matrix_sub)
 }
 
 # Annotated genotype matrices
-fto_result <- annotate(fto_filtered)
-fto_gt <- fto_result$gt_matrix
-
-tcf_result <- annotate(tcf_filtered)
-tcf_gt <- tcf_result$gt_matrix
-
-slc_result <- annotate(slc_filtered)
-slc_gt <- slc_result$gt_matrix
+fto_gt <- annotate(fto_filtered)
+tcf_gt <- annotate(tcf_filtered)
+slc_gt <- annotate(slc_filtered)
 
 # Convert genotype to numeric 
 vcf_to_numeric <- function(gt) {
@@ -129,6 +124,10 @@ vcf_to_numeric <- function(gt) {
                    nrow = nrow(gt),
                    ncol = ncol(gt),
                    dimnames = dimnames(gt))
+  
+  # Preserve attributes from original matrix
+  attr(gt_num, "pop") <- attr(gt, "pop")
+  attr(gt_num, "super_pop") <- attr(gt, "super_pop")
   
   # Convert alleles
   gt_num[gt == "0/0"] <- 0
@@ -144,22 +143,33 @@ tcf_gt <- vcf_to_numeric(tcf_gt)
 slc_gt <- vcf_to_numeric(slc_gt)
 
 # Function to convert to snpMatrix and filter
-gt_to_snp <- function(gt, call_rate = 0.95) {
+gt_to_snp <- function(gt, call_rate = 0.95, pop) {
+  # Subset to EUR and SAS
+  super_pop <- attr(gt, "super_pop")
+  gt <- gt[, super_pop == pop]
+  
   # Convert to snpMatrix
   snp_mat <- as(t(gt), "SnpMatrix")
   
   # Filter out low call rate
   snp_sum <- col.summary(snp_mat)
-  filt <- snp_sum$Call.rate >= call_rate
+  filt <- snp_sum$Call.rate >= call_rate &
+          snp_sum$MAF >= 0.001
   snp_mat <- snp_mat[, filt]
   
   return(snp_mat)
 }
 
-# Call function for each gene
-fto_snp <- gt_to_snp(fto_gt)
-tcf_snp <- gt_to_snp(tcf_gt)
-slc_snp <- gt_to_snp(slc_gt)
+# Call function for each gene and population
+fto_snp_eur <- gt_to_snp(fto_gt, pop = "EUR")
+fto_snp_sas <- gt_to_snp(fto_gt, pop = "SAS")
+
+tcf_snp_eur <- gt_to_snp(tcf_gt, pop = "EUR")
+tcf_snp_sas <- gt_to_snp(tcf_gt, pop = "SAS")
+
+slc_snp_eur <- gt_to_snp(slc_gt, pop = "EUR")
+slc_snp_sas <- gt_to_snp(slc_gt, pop = "SAS")
+
 
 # Function to compute LD and plot heatmap
 plot_ld <- function(snp_matrix, gene_name) {
@@ -189,9 +199,81 @@ plot_ld <- function(snp_matrix, gene_name) {
 }
 
 # Call function for all 3 genes
-plot_ld(fto_snp, "FTO")
-plot_ld(tcf_snp, "TCF7L2") # Has a lot of NA's compared to the other genes, need to check
-plot_ld(slc_snp, "SLC30A8")
+plot_ld(fto_snp_eur, "FTO")
+plot_ld(fto_snp_sas, "FTO")
+
+plot_ld(tcf_snp_eur, "TCF7L2") 
+plot_ld(tcf_snp_sas, "TCF7L2") 
+
+plot_ld(slc_snp_eur, "SLC30A8")
+plot_ld(slc_snp_sas, "SLC30A8")
+
+# Or directly with LDheatmap package
+LDheatmap(fto_snp, LDmeasure = "r", color = "blueToRed", add.map = F)
+LDheatmap(tcf_snp, LDmeasure = "r", color = "blueToRed", add.map = F)
+LDheatmap(slc_snp, LDmeasure = "r", color = "blueToRed", add.map = F)
+
+# --- Hardy Weinberg Equilibrium Test -------
+# Using snpStats package
+compute_hwe <- function(snp_mat, gene_name) {
+  snp_sum <- col.summary(snp_mat)
+  
+  hwe_df <- data.frame(
+    SNP = colnames(snp_mat),
+    MAF = snp_sum$MAF,
+    CallRate = snp_sum$Call.rate,
+    z = snp_sum$z.HWE,
+    p = 2 * pnorm(-abs(snp_sum$z.HWE))
+  )
+  
+  return(hwe_df)
+}
+
+fto_hwe <- compute_hwe(fto_snp, "FTO")
+tcf_hwe <- compute_hwe(tcf_snp, "TCF7L2")
+slc_hwe <- compute_hwe(slc_snp, "SLC30A8")
+
+# Using HardyWeinberg package
+# Function to convert to genotype counts
+snp_to_counts <- function(snp_mat) {
+  # Convert to numeric matrix
+  num_mat <- as(snp_mat, "numeric")
+  
+  # Make genotype columns per SNP
+  counts <- t(apply(num_mat, 2, function(x)
+    {
+    c(AA = sum(x == 0, na.rm = T),
+      AB = sum(x == 1, na.rm = T),
+      BB = sum(x == 2, na.rm = T))
+  }))
+  
+  return(counts)
+}
+
+# Call function for each gene
+fto_counts_eur <- snp_to_counts(fto_snp_eur)
+fto_counts_sas <- snp_to_counts(fto_snp_sas)
+
+tcf_counts_eur <- snp_to_counts(tcf_snp_eur)
+tcf_counts_sas <- snp_to_counts(tcf_snp_sas)
+
+slc_counts_eur <- snp_to_counts(slc_snp_eur)
+slc_counts_sas <- snp_to_counts(slc_snp_sas)
+
+# Function to make ternary plots
+plot_hwe <- function(counts_eur, counts_sas, snp_eur, snp_sas, gene) {
+  par(mfrow = c(1, 2))
+  HWTernaryPlot(counts_eur, n = nrow(snp_eur), alpha = 0.05,
+                main = paste(gene, "- EUR"))
+  HWTernaryPlot(counts_sas, n = nrow(snp_sas), alpha = 0.05,
+                main = paste(gene, "- SAS"))
+  par(mfrow = c(1, 1))
+}
+
+# TO-DO: make plots prettier
+plot_hwe(fto_counts_eur, fto_counts_sas, fto_snp_eur, fto_snp_sas, "FTO")
+plot_hwe(tcf_counts_eur, tcf_counts_sas, tcf_snp_eur, tcf_snp_sas, "TCF7L2")
+plot_hwe(slc_counts_eur, slc_counts_sas, slc_snp_eur, slc_snp_sas, "SLC30A8")
 
 
 # --- Exploratory PCA -------
@@ -325,10 +407,6 @@ plot_pca_subpop <- function(scores, var_exp, gene_name) {
   plot_layout(guides = "collect") +
   plot_annotation(title = "PCA - EUR vs SAS Subpopulations")&
   theme(legend.position = "bottom")
-
-# --- Hardy Weinberg Equilibrium Test -------
-# TO-DO: conduct HWE test
-
 
 ### === CLUSTERING ANALYSIS ========
 # --- K-means: Elbow plot -------
