@@ -12,6 +12,7 @@ library(ggplot2)
 library(snpStats)
 library(cluster)
 library(patchwork)
+library(TVTB)
 
 
 ### === DATA INPUT AND PREPROCESSING ========
@@ -151,27 +152,39 @@ fto_snp <- as(fto_gt, "SnpMatrix")
 tcf_snp <- as(tcf_gt, "SnpMatrix")
 slc_snp <- as(slc_gt, "SnpMatrix")
 
-# TO-DO: make function to compute R squared  + summary + df + plot for each gene
-# Compute R squared
-fto_ld <- ld(fto_snp, depth = ncol(fto_snp), stats = "R.squared")
-tcf_ld <- ld(tcf_snp, depth = ncol(tcf_snp), stats = "R.squared")
-slc_ld <- ld(slc_snp, depth = ncol(slc_snp), stats = "R.squared")
 
-# Summary of R squared value
-summary(as.vector(fto_ld))
-max(fto_ld, na.rm = TRUE)
+# Function to compute LD and plot heatmap
+plot_ld <- function(snp_matrix, gene_name) {
+  
+  # Compute R squared
+  ld_result <- ld(snp_matrix, depth = ncol(snp_matrix), stats = "R.squared")
+  
+  # Summary of R squared value
+  cat(gene_name, "- LD Summary:\n")
+  print(summary(as.vector(ld_result)))
+  cat("Max R-squared:", max(ld_result, na.rm = TRUE), "\n\n")
+  
+  # Create df for heatmap
+  ld_df <- as.data.frame(as.table(as.matrix(ld_result)))
+  colnames(ld_df) <- c("SNP1", "SNP2", "R2")
+  
+  # Plot
+  ggplot(ld_df, aes(SNP1, SNP2, fill = R2)) +
+    geom_tile() +
+    scale_fill_gradient(low = "blue", high = "red", 
+                        limits = c(0, 1), name = "R²") +
+    theme_minimal() +
+    theme(axis.text  = element_blank(),
+          axis.ticks = element_blank()) +
+    labs(title = paste(gene_name, "LD Structure"),
+         x = "SNP1", y = "SNP2")
+}
 
-# Create a df for the heatmap
-ld_df <- as.data.frame(as.table(as.matrix(fto_ld)))
-colnames(ld_df) <- c("SNP1", "SNP2", "R2")
+# Call function for all 3 genes
+plot_ld(fto_snp, "FTO")
+plot_ld(tcf_snp, "TCF7L2")
+plot_ld(slc_snp, "SLC30A8")
 
-# Plot
-ggplot(ld_df, aes(SNP1, SNP2, fill = R2)) +
-  geom_tile() +
-  scale_fill_gradient(low = "blue", high = "red") +
-  theme_minimal() +
-  theme(axis.text = element_blank()) +
-  labs(title = "FTO LD")
 
 # --- Exploratory PCA -------
 # Function to prepare genotype matrix for PCA
