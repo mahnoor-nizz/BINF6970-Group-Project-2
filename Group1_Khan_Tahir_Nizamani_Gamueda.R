@@ -119,10 +119,6 @@ tcf_gt <- tcf_result$gt_matrix
 slc_result <- annotate(slc_filtered)
 slc_gt <- slc_result$gt_matrix
 
-# Combining genotype matrices into one 
-all_gt <- rbind(fto_gt, tcf_gt, slc_gt)
-dim(all_gt) # 3391 SNPs across 3 genes
-
 # Convert genotype to numeric 
 vcf_to_numeric <- function(gt) {
   # Replace | with /
@@ -147,17 +143,29 @@ fto_gt <- vcf_to_numeric(fto_gt)
 tcf_gt <- vcf_to_numeric(tcf_gt)
 slc_gt <- vcf_to_numeric(slc_gt)
 
-# Convert to SNPmatrix
-fto_snp <- as(fto_gt, "SnpMatrix")
-tcf_snp <- as(tcf_gt, "SnpMatrix")
-slc_snp <- as(slc_gt, "SnpMatrix")
+# Function to convert to snpMatrix and filter
+gt_to_snp <- function(gt, call_rate = 0.95) {
+  # Convert to snpMatrix
+  snp_mat <- as(t(gt), "SnpMatrix")
+  
+  # Filter out low call rate
+  snp_sum <- col.summary(snp_mat)
+  filt <- snp_sum$Call.rate >= call_rate
+  snp_mat <- snp_mat[, filt]
+  
+  return(snp_mat)
+}
 
+# Call function for each gene
+fto_snp <- gt_to_snp(fto_gt)
+tcf_snp <- gt_to_snp(tcf_gt)
+slc_snp <- gt_to_snp(slc_gt)
 
 # Function to compute LD and plot heatmap
 plot_ld <- function(snp_matrix, gene_name) {
   
   # Compute R squared
-  ld_result <- ld(snp_matrix, depth = ncol(snp_matrix), stats = "R.squared")
+  ld_result <- ld(snp_matrix, depth = ncol(snp_matrix) - 1, stats = "R.squared")
   
   # Summary of R squared value
   cat(gene_name, "- LD Summary:\n")
@@ -182,7 +190,7 @@ plot_ld <- function(snp_matrix, gene_name) {
 
 # Call function for all 3 genes
 plot_ld(fto_snp, "FTO")
-plot_ld(tcf_snp, "TCF7L2")
+plot_ld(tcf_snp, "TCF7L2") # Has a lot of NA's compared to the other genes, need to check
 plot_ld(slc_snp, "SLC30A8")
 
 
