@@ -7,24 +7,28 @@ library(VariantAnnotation)
 library(TVTB)
 library(HardyWeinberg)
 library(dplyr)
+library(tidyverse)
 library(ggplot2)
+library(snpStats)
+library(cluster)
+library(patchwork)
 
 
 ### === DATA INPUT AND PREPROCESSING ========
 # Input VCF files
 vcf_fto <- readVcf("fto_chr16.vcf.gz")
+vcf_fto # 11355 variants, 2504 samples
+
 vcf_tcf <- readVcf("tcf_chr10.vcf.gz")
+vcf_tcf # 7641 variants, 2504 samples
+
 vcf_slc <- readVcf("slc_chr8.vcf.gz")
+vcf_slc # 5873 variants, 2504 samples
 
-# Input panel files
+# Input panel file
 panel <- read.table("integrated_call_samples_v3.20130502.ALL.panel", header = T)
-panel <- panel[panel$super_pop %in% c("SAS", "EUR"), ]
+panel <- panel[panel$super_pop %in% c("SAS", "EUR"), ] # subset panel file to EUR and SAS
 table(panel$pop)
-
-# Check number of SNPs pre-filters
-info(vcf_fto) # variants = 11355
-info(vcf_tcf) # variants = 7641
-info(vcf_slc) # variants = 5873
 
 # Check multiallelic sites
 table(elementNROWS(alt(vcf_fto))) # 56 multiallelic sites
@@ -41,16 +45,54 @@ info_rules <- VcfInfoRules(list(
 ))
 
 # Filtering out rare alleles and checking number of variants post-filter
-vcf_fto_filt <- subsetByFilter(vcf_fto, info_rules)
-vcf_fto_filt # 1696 variants
+fto_filtered <- subsetByFilter(vcf_fto, info_rules) 
+fto_filtered # 1696 variants
 
-vcf_tcf_filt <- subsetByFilter(vcf_tcf, info_rules)
-vcf_tcf_filt # 1161 variants
+tcf_filtered <- subsetByFilter(vcf_tcf, info_rules)
+tcf_filtered # 1161 variants
 
-vcf_slc_filt <- subsetByFilter(vcf_slc, info_rules)
-vcf_slc_filt # 534 variants
+slc_filtered <- subsetByFilter(vcf_slc, info_rules)
+slc_filtered # 534 variants
 
-# Function to annotate subpopulations
+
+### === Exploratory Data Analysis ========
+# --- Allele frequency histograms -------
+# Extract SAS and EUR AF for each gene into dataframes
+make_eda_df <- function(vcf_filtered, gene) {
+  vcf_filtered %>%
+    info() %>%
+    as.data.frame %>%
+    select(SAS_AF, EUR_AF) %>%
+    mutate(SAS_AF = as.numeric(sapply(SAS_AF, `[[`, 1)),
+           EUR_AF = as.numeric(sapply(EUR_AF, `[[`, 1)),
+           gene = gene)
+}
+
+fto_eda <- make_eda_df(fto_filtered, "FTO")
+tcf_eda <- make_eda_df(tcf_filtered, "TCF7L2")
+slc_eda <- make_eda_df(slc_filtered, "SLC30A8")
+
+eda_all <- bind_rows(fto_eda, tcf_eda, slc_eda)
+
+# AF distribution per population and gene
+all_eda_long <- eda_all %>%
+  pivot_longer(cols = c(SAS_AF, EUR_AF),
+               names_to  = "population",
+               values_to = "AF") %>%
+  mutate(population = recode(population,
+                             "SAS_AF" = "SAS",
+                             "EUR_AF" = "EUR"))
+
+# Plot the AF of each population per gene
+ggplot(all_eda_long, aes(x = AF, fill = population)) +
+  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+  facet_wrap(~gene) +
+  scale_fill_manual(values = c("SAS" = "steelblue", "EUR" = "coral")) +
+  labs(title = "Allele Frequency Distribution",
+       x = "Allele Frequency", y = "Count")
+
+# --- Linkage Disequilibrium Structure -------
+# Function to annotate subpopulations and generate genotype matrix
 annotate <- function(vcf) {
   gt_matrix <- geno(vcf)$GT
   samples <- intersect(colnames(gt_matrix), panel$sample)
@@ -67,28 +109,31 @@ annotate <- function(vcf) {
 }
 
 # Annotated genotype matrices
-result_fto <- annotate(vcf_fto_filt)
-gt_fto <- result_fto$gt_matrix
+fto_result <- annotate(fto_filtered)
+fto_gt <- fto_result$gt_matrix
 
-result_tcf <- annotate(vcf_tcf_filt)
-gt_tcf <- result_tcf$gt_matrix
+tcf_result <- annotate(tcf_filtered)
+tcf_gt <- tcf_result$gt_matrix
 
-result_slc <- annotate(vcf_slc_filt)
-gt_slc <- result_slc$gt_matrix
+slc_result <- annotate(slc_filtered)
+slc_gt <- slc_result$gt_matrix
 
 # Combining genotype matrices into one 
-gt_all <- rbind(gt_fto, gt_tcf, gt_slc)
-dim(gt_all) # 3391 SNPs across 3 genes
+all_gt <- rbind(fto_gt, tcf_gt, slc_gt)
+dim(all_gt) # 3391 SNPs across 3 genes
 
-# Convert genotype to numeric (made function because I don't know if we'll be using separate matrices later)
-numeric_convert <- function(gt) {
+# Convert genotype to numeric 
+vcf_to_numeric <- function(gt) {
+  # Replace | with /
   gt <- gsub("\\|", "/", gt)
   
+  # Create empty matrix
   gt_num <- matrix(NA_real_, 
-               nrow = nrow(gt),
-               ncol = ncol(gt),
-               dimnames = dimnames(gt))
+                   nrow = nrow(gt),
+                   ncol = ncol(gt),
+                   dimnames = dimnames(gt))
   
+  # Convert alleles
   gt_num[gt == "0/0"] <- 0
   gt_num[gt %in% c("0/1", "1/0")] <- 1
   gt_num[gt == "1/1"] <- 2
@@ -96,94 +141,247 @@ numeric_convert <- function(gt) {
   return(gt_num)
 }
 
-gt_all_num <- numeric_convert(gt_all)
+# Call function for each gene
+fto_gt <- vcf_to_numeric(fto_gt)
+tcf_gt <- vcf_to_numeric(tcf_gt)
+slc_gt <- vcf_to_numeric(slc_gt)
 
-# Check if conversion worked
-gt_all[1:5, 1:5]
-gt_all_num[1:5, 1:5]
+# Convert to SNPmatrix
+fto_snp <- as(fto_gt, "SnpMatrix")
+tcf_snp <- as(tcf_gt, "SnpMatrix")
+slc_snp <- as(slc_gt, "SnpMatrix")
 
+# TO-DO: make function to compute R squared  + summary + df + plot for each gene
+# Compute R squared
+fto_ld <- ld(fto_snp, depth = ncol(fto_snp), stats = "R.squared")
+tcf_ld <- ld(tcf_snp, depth = ncol(tcf_snp), stats = "R.squared")
+slc_ld <- ld(slc_snp, depth = ncol(slc_snp), stats = "R.squared")
 
+# Summary of R squared value
+summary(as.vector(fto_ld))
+max(fto_ld, na.rm = TRUE)
 
-### === Exploratory Data Analysis ========
-# Exploratory PCA
-# Account for N/a values in matrix
-gt_all_num <- t(apply(gt_all_num, 1, function(x) {
-  x[is.na(x)] <- mean(x, na.rm = T)
-  x
-}))
-sum(is.na(gt_all_num)) # all N/A's converted
+# Create a df for the heatmap
+ld_df <- as.data.frame(as.table(as.matrix(fto_ld)))
+colnames(ld_df) <- c("SNP1", "SNP2", "R2")
 
-# Filter monomoprhic SNPs
-gt_all_num <- gt_all_num[apply(gt_all_num, 1,var) > 0, ]
-nrow(gt_all_num) # 3391 SNPs to 3307 SNPs
+# Plot
+ggplot(ld_df, aes(SNP1, SNP2, fill = R2)) +
+  geom_tile() +
+  scale_fill_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  theme(axis.text = element_blank()) +
+  labs(title = "FTO LD")
 
-# Run PCA
-pca_gt_all <- prcomp(t(gt_all_num),
-                     scale. = T)
-summary(pca_gt_all)
+# --- Exploratory PCA -------
+# Function to prepare genotype matrix for PCA
+prep_matrix <- function(gt_matrix) {
+  # Fill NAs with row mean
+  gt_filled <- t(apply(gt_matrix, 1, function(x) {
+    x[is.na(x)] <- mean(x, na.rm = TRUE)
+    x
+  }))
+  cat("N/A's remaining:", sum(is.na(gt_filled)), "\n")
+  
+  # Remove monomorphic SNPs
+  gt_filtered <- gt_filled[apply(gt_filled, 1, var) > 0, ]
+  cat("SNPs remaining after monomorphic filter:", nrow(gt_filtered), "\n")
+  return(gt_filtered)
+}
 
-# Calculate variance explained
-eigenvals <- pca_gt_all$sdev^2
-var_explained <- eigenvals / sum(eigenvals) * 100
+fto_mat <- prep_matrix(fto_gt)
+tcf_mat <- prep_matrix(tcf_gt)
+slc_mat <- prep_matrix(slc_gt)
 
-# For YUMNA: idk if its variance explained or eigenvalues
-scree_df <- data.frame(
-  PC = 1:20,
-  Variance = var_explained[1:20]
+# Function to run PCA
+run_pca <- function(gt_matrix) {
+  prcomp(t(gt_matrix), scale. = TRUE)
+}
+
+fto_pca <- run_pca(fto_mat)
+tcf_pca <- run_pca(tcf_mat)
+slc_pca <- run_pca(slc_mat)
+
+# Function to get variance explained
+get_var_explained <- function(pca_result) {
+  eigenvals <- pca_result$sdev^2
+  eigenvals / sum(eigenvals) * 100
+}
+
+fto_var <- get_var_explained(fto_pca)
+tcf_var <- get_var_explained(tcf_pca)
+slc_var <- get_var_explained(slc_pca)
+
+# Scree plot
+scree_df <- bind_rows(
+  data.frame(PC = 1:20, Variance = fto_var[1:20], gene = "FTO"),
+  data.frame(PC = 1:20, Variance = tcf_var[1:20], gene = "TCF7L2"),
+  data.frame(PC = 1:20, Variance = slc_var[1:20], gene = "SLC30A8")
 )
 
 ggplot(scree_df, aes(x = PC, y = Variance)) +
   geom_point(size = 2) +
   geom_line() +
+  facet_wrap(~gene) +
   scale_x_continuous(breaks = 1:20) +
-  labs(title = "Scree Plot",
-       x = "PC Number",
-       y = "Variance Explained (%)") +
+  labs(title = "Scree Plots by Gene",
+       x     = "PC Number",
+       y     = "Variance Explained (%)") +
   theme_minimal()
 
-# Extract PCA scores
-pca_scores <- as.data.frame(pca_gt_all$x)
-pca_scores$sample <- panel$sample
-pca_scores$pop <- panel$pop
-pca_scores$super_pop <- panel$super_pop
+# Function to build PCA score dataframes with population labels
+build_pca_scores <- function(pca_result, panel, var_explained, gene_name) {
+  scores         <- as.data.frame(pca_result$x)
+  scores$sample  <- rownames(scores)
+  scores         <- left_join(scores, panel, by = "sample")
+  scores$gene    <- gene_name
+  scores$pc1_var <- round(var_explained[1], 1)
+  scores$pc2_var <- round(var_explained[2], 1)
+  return(scores)
+}
+
+fto_scores <- build_pca_scores(fto_pca, panel, fto_var, "FTO")
+tcf_scores <- build_pca_scores(tcf_pca, panel, tcf_var, "TCF7L2")
+slc_scores <- build_pca_scores(slc_pca, panel, slc_var, "SLC30A8")
+
+# Quick check
+head(fto_scores[, c("sample", "pop", "super_pop")])
+
+# --- PCA Plots -------
+# TO-DO: change color palette to RColorBrewer one
+# Superpopulation colours
+superpop_colours <- c("EUR" = "coral", "SAS" = "steelblue")
+
+# Subpopulation colours (5 EUR + 5 SAS = 10 subpops)
+subpop_colours <- c(
+  # EUR subpopulations
+  "CEU" = "#e63946", "TSI" = "#f4a261", "FIN" = "#e9c46a",
+  "GBR" = "#2a9d8f", "IBS" = "#457b9d",
+  # SAS subpopulations  
+  "BEB" = "#7b2d8b", "GIH" = "#c77dff", "ITU" = "#9d4edd",
+  "PJL" = "#5a189a", "STU" = "#e0aaff"
+)
+
+# Plot function for superpopulation
+plot_pca_superpop <- function(scores, var_exp, gene_name) {
+  ggplot(scores, aes(x = PC1, y = PC2, colour = super_pop)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    scale_color_manual(values = superpop_colours) +
+    labs(title  = gene_name,
+         x      = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+         y      = paste0("PC2 (", round(var_exp[2], 1), "%)"),
+         colour = "Superpopulation") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+# Plot function for subpopulation 
+plot_pca_subpop <- function(scores, var_exp, gene_name) {
+  ggplot(scores, aes(x = PC1, y = PC2, colour = pop)) +
+    geom_point(alpha = 0.7, size = 1.5) +
+    scale_color_manual(values = subpop_colours) +
+    labs(title  = gene_name,
+         x      = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+         y      = paste0("PC2 (", round(var_exp[2], 1), "%)"),
+         colour = "Subpopulation") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+# Plot superpopulation per gene
+(plot_pca_superpop(fto_scores, fto_var, "FTO") +
+    plot_pca_superpop(tcf_scores, tcf_var, "TCF7L2") +
+    plot_pca_superpop(slc_scores, slc_var, "SLC30A8")) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "PCA - EUR vs SAS Superpopulations") &
+  theme(legend.position = "bottom")
 
 
-# PCA plot for superpopulation
-ggplot(pca_scores, aes(x = PC1, y = PC2, colour = super_pop)) +
-  geom_point(alpha = 0.7, size = 2) +
-  labs(title = "PCA of Superpopulation (SAS vs EUR)",
-       x = paste0("PC1 (", round(var_explained[1], 1), "% variance explained)"),
-       y = paste0("PC2 (", round(var_explained[2], 1), "% variance explained)"),
-       colour = "Superpopulation") +
-  theme_minimal()
-# some overlap, but there are some distinct clusters
+# Plot subpopulations per gene
+(plot_pca_subpop(fto_scores, fto_var, "FTO") +
+    plot_pca_subpop(tcf_scores, tcf_var, "TCF7L2") +
+    plot_pca_subpop(slc_scores, slc_var, "SLC30A8")) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "PCA - EUR vs SAS Subpopulations")&
+  theme(legend.position = "bottom")
 
-# PCA plots for subpopulation
-pca_EUR <- pca_scores[pca_scores$super_pop == "EUR", ]
-pca_SAS <- pca_scores[pca_scores$super_pop == "SAS", ]
-
-ggplot(pca_SAS, aes(x = PC1, y = PC2, colour = pop)) +
-  geom_point(alpha = 0.7, size = 2) +
-  labs(title  = "PCA of EUR Subpopulations",
-       x = paste0("PC1 (", round(var_explained[1], 1), "% variance explained)"),
-       y = paste0("PC2 (", round(var_explained[2], 1), "% variance explained)"),
-       colour = "Subpopulation") +
-  theme_minimal()
-
-ggplot(pca_EUR, aes(x = PC1, y = PC2, colour = pop)) +
-  geom_point(alpha = 0.7, size = 2) +
-  labs(title  = "PCA of EUR Subpopulations",
-       x = paste0("PC1 (", round(var_explained[1], 1), "% variance explained)"),
-       y = paste0("PC2 (", round(var_explained[2], 1), "% variance explained)"),
-       colour = "Subpopulation") +
-  theme_minimal()
-# large overlap and no distinct clustering
-
-# Hardy Weinberg Equilibrium Test
-
+# --- Hardy Weinberg Equilibrium Test -------
+# TO-DO: conduct HWE test
 
 
 ### === CLUSTERING ANALYSIS ========
+# --- K-means: Elbow plot -------
+# Function to calculate within-cluster sum of squares for k=1 to k=10
+elbow_plot <- function(pca_result, title) {
+  
+  # Try k from 1 to 10
+  wss <- sapply(1:10, function(k) {
+    kmeans(pca_result$x[, 1:10], 
+           centers = k, 
+           nstart = 25)$tot.withinss # # run 25 times with diff. starting points, keep best, then extract total within-cluster sum of squares
+  })
+  data.frame(k = 1:10, wss = wss, gene = title)
+}
+
+# Combine genes
+elbow_df <- bind_rows(
+  elbow_plot(fto_pca, "FTO"),
+  elbow_plot(tcf_pca, "TCF7L2"),
+  elbow_plot(slc_pca, "SLC30A8")
+)
+
+# Plot
+ggplot(elbow_df, aes(x = k, y = wss)) +
+  geom_point(size = 2) +
+  geom_line() +
+  facet_wrap(~gene, scales = "free_y") + # Each plot has own axis
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Elbow Plot by Gene",
+       x     = "Number of Clusters (k)",
+       y     = "Total Within-Cluster SS") +
+  theme_minimal()
+
+# --- K-means: Calculation -------
+set.seed(42)
+# Run k-means on first 10 PCs
+run_kmeans <- function(pca_result, scores, k) {
+  km             <- kmeans(pca_result$x[, 1:10], centers = k, nstart = 25)
+  scores$cluster <- as.factor(km$cluster)
+  return(scores)
+}
+
+# Call function for each gene
+fto_k <- run_kmeans(fto_pca, fto_scores, 6)
+tcf_k <- run_kmeans(tcf_pca, tcf_scores, 9)
+slc_k <- run_kmeans(slc_pca, slc_scores, 4)
+
+# Plot function for k-means
+plot_kmeans_compare <- function(scores, var_exp, gene_name, k) {
+  ggplot(scores, aes(PC1, PC2, colour = cluster)) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    labs(title  = paste0("K-means of ", gene_name, " gene (k=",k,")"),
+         x      = paste0("PC1 (", round(var_exp[1], 1), "%)"),
+         y      = paste0("PC2 (", round(var_exp[2], 1), "%)"),
+         colour = "Cluster") +
+    theme_minimal()
+}
+
+# Plots per gene
+plot_kmeans_compare(fto_k, fto_var, "FTO", 6)
+plot_kmeans_compare(tcf_k, tcf_var, "TCF7L2", 9)
+plot_kmeans_compare(slc_k, slc_var, "SLC30A8", 4)
+
+# --- K-means: Silhouette score -------
+# Measures how well each point fits its cluster
+fto_sil  <- silhouette(as.integer(fto_k$cluster),  dist(fto_pca$x[, 1:10]))
+tcf_sil  <- silhouette(as.integer(tcf_k$cluster),  dist(tcf_pca$x[, 1:10]))
+slc_sil  <- silhouette(as.integer(slc_k$cluster),  dist(slc_pca$x[, 1:10]))
+
+# Average silhouette width per gene
+# Closer to 1 = well clustered, closer to 0 = overlapping clusters
+summary(fto_sil)$avg.width
+summary(tcf_sil)$avg.width
+summary(slc_sil)$avg.width
 
 
 ### === CLASSIFICATION ANALYSIS ========
