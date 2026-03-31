@@ -506,7 +506,7 @@ train <- rf_data[train_idx, ]
 test <- rf_data[-train_idx, ]
 
 # Train random forest classifier
-rf_model <- ranger(popuation ~ .,
+rf_model <- ranger(population ~ .,
                    data = train_data,
                    num.trees = 500,
                    mtry = floor(sqrt(ncol(train_data) - 1)),
@@ -514,7 +514,14 @@ rf_model <- ranger(popuation ~ .,
                    classification = T)
 
 # Predict on test set
+rf_pred <- predict(rf_model,
+                   test,
+                   num.trees = 500,
+                   type = "response")
+
 
 # Confusion matrix
+table(test$population, rf_pred$predictions)
 
 # SNP importance
+importance(rf_model)
