@@ -1,7 +1,7 @@
 ### =================
 # BINF6970 Assignment 3
 # Analysis of genotype data from 1000 Genomes Project
-
+# FOR MN READ BEFORE YOU START PLEASE CHECK IN WITH US BEFORE YOU DO ANYTHING
 
 ### === PACKAGES USED ========
 library(VariantAnnotation)
@@ -14,6 +14,7 @@ library(snpStats)
 library(cluster)
 library(patchwork)
 library(TVTB)
+library(ranger)
 
 
 ### === DATA INPUT AND PREPROCESSING ========
@@ -74,6 +75,7 @@ fto_eda <- make_eda_df(fto_filtered, "FTO")
 tcf_eda <- make_eda_df(tcf_filtered, "TCF7L2")
 slc_eda <- make_eda_df(slc_filtered, "SLC30A8")
 
+# Combine into one data frame
 eda_all <- bind_rows(fto_eda, tcf_eda, slc_eda)
 
 # AF distribution per population and gene
@@ -109,12 +111,12 @@ annotate <- function(vcf) {
   return(gt_matrix_sub)
 }
 
-# Annotated genotype matrices
+# Call function for each gene
 fto_gt <- annotate(fto_filtered)
 tcf_gt <- annotate(tcf_filtered)
 slc_gt <- annotate(slc_filtered)
 
-# Convert genotype to numeric 
+# Function to convert genotype to numeric 
 vcf_to_numeric <- function(gt) {
   # Replace | with /
   gt <- gsub("\\|", "/", gt)
@@ -143,10 +145,12 @@ tcf_gt <- vcf_to_numeric(tcf_gt)
 slc_gt <- vcf_to_numeric(slc_gt)
 
 # Function to convert to snpMatrix and filter
-gt_to_snp <- function(gt, call_rate = 0.95, pop) {
+gt_to_snp <- function(gt, call_rate = 0.95, pop = NULL) {
   # Subset to EUR and SAS
+  if (!is.null(pop)) {
   super_pop <- attr(gt, "super_pop")
   gt <- gt[, super_pop == pop]
+  }
   
   # Convert to snpMatrix
   snp_mat <- as(t(gt), "SnpMatrix")
@@ -163,12 +167,15 @@ gt_to_snp <- function(gt, call_rate = 0.95, pop) {
 # Call function for each gene and population
 fto_snp_eur <- gt_to_snp(fto_gt, pop = "EUR")
 fto_snp_sas <- gt_to_snp(fto_gt, pop = "SAS")
+fto_snp <- gt_to_snp(fto_gt)
 
 tcf_snp_eur <- gt_to_snp(tcf_gt, pop = "EUR")
 tcf_snp_sas <- gt_to_snp(tcf_gt, pop = "SAS")
+tcf_snp <- gt_to_snp(tcf_gt)
 
 slc_snp_eur <- gt_to_snp(slc_gt, pop = "EUR")
 slc_snp_sas <- gt_to_snp(slc_gt, pop = "SAS")
+slc_snp <- gt_to_snp(slc_gt)
 
 
 # Function to compute LD and plot heatmap
@@ -484,3 +491,30 @@ summary(slc_sil)$avg.width
 
 
 ### === CLASSIFICATION ANALYSIS ========
+# Combine into one feature matrix
+rf_data <- cbind(as.data.frame(t(fto_gt)),
+                 as.data.frame(t(tcf_gt)),
+                 as.data.frame(t(slc_gt)))
+rf_data$population <- as.factor(attr(fto_gt, "super_pop"))
+
+
+# Create training/test sets (80/20)
+set.seed(42)
+train_idx <- sample(seq_len(nrow(rf_data)), size = 0.8 * n)
+
+train <- rf_data[train_idx, ]
+test <- rf_data[-train_idx, ]
+
+# Train random forest classifier
+rf_model <- ranger(popuation ~ .,
+                   data = train_data,
+                   num.trees = 500,
+                   mtry = floor(sqrt(ncol(train_data) - 1)),
+                   importance = "impurity",
+                   classification = T)
+
+# Predict on test set
+
+# Confusion matrix
+
+# SNP importance
