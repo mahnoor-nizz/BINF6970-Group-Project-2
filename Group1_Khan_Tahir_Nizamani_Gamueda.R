@@ -14,7 +14,9 @@ library(snpStats)
 library(cluster)
 library(patchwork)
 library(ranger)
-
+library(caret)
+library(pROC)
+library(RColorBrewer)
 
 ### === DATA INPUT AND PREPROCESSING ========
 # Input VCF files
@@ -104,7 +106,7 @@ ggplot(all_eda_long, aes(x = AF, fill = population)) +
 
 # --- Linkage Disequilibrium Structure -------
 # Function to annotate subpopulations and generate genotype matrix
-annotate <- function(vcf) {
+annotate_pop <- function(vcf) {
   gt_matrix <- geno(vcf)$GT
   samples <- intersect(colnames(gt_matrix), panel$sample)
 
@@ -119,9 +121,9 @@ annotate <- function(vcf) {
 }
 
 # Call function for each gene
-fto_gt <- annotate(fto_filtered)
-tcf_gt <- annotate(tcf_filtered)
-slc_gt <- annotate(slc_filtered)
+fto_gt <- annotate_pop(fto_filtered)
+tcf_gt <- annotate_pop(tcf_filtered)
+slc_gt <- annotate_pop(slc_filtered)
 
 # Function to convert genotype to numeric
 vcf_to_numeric <- function(gt) {
@@ -237,26 +239,6 @@ LDheatmap(tcf_snp, LDmeasure = "r", color = "blueToRed", add.map = F)
 LDheatmap(slc_snp, LDmeasure = "r", color = "blueToRed", add.map = F)
 
 # --- Hardy Weinberg Equilibrium Test -------
-# Using snpStats package
-compute_hwe <- function(snp_mat, gene_name) {
-  snp_sum <- col.summary(snp_mat)
-
-  hwe_df <- data.frame(
-    SNP = colnames(snp_mat),
-    MAF = snp_sum$MAF,
-    CallRate = snp_sum$Call.rate,
-    z = snp_sum$z.HWE,
-    p = 2 * pnorm(-abs(snp_sum$z.HWE))
-  )
-
-  return(hwe_df)
-}
-
-fto_hwe <- compute_hwe(fto_snp, "FTO")
-tcf_hwe <- compute_hwe(tcf_snp, "TCF7L2")
-slc_hwe <- compute_hwe(slc_snp, "SLC30A8")
-
-# Using HardyWeinberg package
 # Function to convert to genotype counts
 snp_to_counts <- function(snp_mat) {
   # Convert to numeric matrix
@@ -307,6 +289,29 @@ plot_hwe(fto_counts_eur, fto_counts_sas, fto_snp_eur, fto_snp_sas, "FTO")
 plot_hwe(tcf_counts_eur, tcf_counts_sas, tcf_snp_eur, tcf_snp_sas, "TCF7L2")
 plot_hwe(slc_counts_eur, slc_counts_sas, slc_snp_eur, slc_snp_sas, "SLC30A8")
 
+# --- Independence of observations check -----
+# Function to check if samples are unrelated via identity by descent
+ibs_check <- function(snp_mat) {
+  # Create IBS matrix
+  ibs_counts <- ibsCount(snp_mat)
+  ibs_dist <- ibsDist(ibs_counts)
+  
+  # Convert distance to similarity score
+  ibs_score <- 1 - as.matrix(ibs_dist)
+  diag(ibs_score) <- NA
+  
+  # Pairs at different thresholds
+  cat("Pairs with IBS > 0.9:", 
+      sum(ibs_score > 0.9, na.rm = TRUE) / 2, "\n")  
+  cat("Pairs with IBS > 0.95:", 
+      sum(ibs_score > 0.95, na.rm = TRUE) / 2, "\n")
+  
+  heatmap(ibs_score)
+}
+
+ibs_check(fto_snp)
+ibs_check(tcf_snp)
+ibs_check(slc_snp)
 
 # --- Exploratory PCA -------
 # Function to prepare genotype matrix for PCA
@@ -554,45 +559,119 @@ summary(slc_sil)$avg.width
 
 
 ### === CLASSIFICATION ANALYSIS ========
+# Random forest assumes independence of observations, so filter out related individuals
+ped <- read.table("integrated_call_samples_v3.20250704.ALL.ped", header = T, sep = "\t")
+
+# Subset only unrelated individuals
+unrel <- ped[ped$Paternal.ID == 0 & ped$Maternal.ID == 0, "Individual.ID"]
+panel_unrel <- panel[panel$sample %in% unrel, ]
+
+# Subset genotype matrices
+fto_rf <- fto_gt[, colnames(fto_gt) %in% panel_unrel$sample]
+tcf_rf <- tcf_gt[, colnames(tcf_gt) %in% panel_unrel$sample]
+slc_rf <- slc_gt[, colnames(slc_gt) %in% panel_unrel$sample]
+
 # Combine into one feature matrix
 rf_data <- cbind(
-  as.data.frame(t(fto_gt)),
-  as.data.frame(t(tcf_gt)),
-  as.data.frame(t(slc_gt))
+  as.data.frame(t(fto_rf)),
+  as.data.frame(t(tcf_rf)),
+  as.data.frame(t(slc_rf))
 )
-rf_data$population <- as.factor(attr(fto_gt, "super_pop"))
+rf_data$population <- as.factor(panel_unrel$super_pop[match(rownames(rf_data), panel_unrel$sample)])
 
+# Clean column names
+colnames(rf_data) <- make.names(colnames(rf_data))
 
 # Create training/test sets (80/20)
 set.seed(42)
-train_idx <- sample(1:nrow(rf_data), size = 0.8 * nrow(rf_data)) # may change sampling method
+train_idx <- createDataPartition(rf_data$population, p = 0.8, list = F)
 
-train <- rf_data[train_idx, ]
-test <- rf_data[-train_idx, ]
+train_data <- rf_data[train_idx, ]
+test_data <- rf_data[-train_idx, ]
 
 # Train random forest classifier
 rf_model <- ranger(population ~ .,
-  data = train,
-  num.trees = 500,
-  # mtry = floor(sqrt(ncol(train) - 1)),
-  importance = "impurity",
-  classification = T
-)
+                   data = train_data,
+                   num.trees = 500,
+                   mtry = floor(sqrt(ncol(train_data) - 1)),
+                   importance = "impurity",
+                   classification = T)
 
 # Predict on test set
 rf_pred <- predict(rf_model,
-  test,
-  num.trees = 500,
-  type = "response"
-)
+                   data = test_data,
+                   num.trees = 500,
+                   type = "response")
+predictions <- rf_pred$predictions
 
 
 # Confusion matrix
-table(test$population, rf_pred$predictions)
+conf_mat <- confusionMatrix(factor(predictions),
+                            factor(test_data$population),
+                            positive = "SAS")
+conf_mat
 
 # Evaluation metrics
+cat("Accuracy:   ", conf_mat$overall["Accuracy"], "\n")
+cat("Kappa:      ", conf_mat$overall["Kappa"], "\n")
+cat("Sensitivity:", conf_mat$byClass["Sensitivity"], "\n")
+cat("Specificity:", conf_mat$byClass["Specificity"], "\n")
+cat("Precision:  ", conf_mat$byClass["Precision"], "\n")
+cat("F1 Score:   ", conf_mat$byClass["F1"], "\n")
 
-# ROC-AUC curve
+# Get predicted probabilities for ROC-AUC curve
+rf_model_prob <- ranger(population ~ .,
+                        data           = train_data,
+                        num.trees      = 500,
+                        mtry           = floor(sqrt(ncol(train_data) - 1)),
+                        importance     = "impurity",
+                        classification = TRUE,
+                        probability    = TRUE)
+probs <- predict(rf_model_prob, test_data)$predictions
 
-# SNP importance
-importance(rf_model)
+# WIP: Create ROC-AUC curve
+roc_res <- roc(response = test_data$population,
+           predictor = probs[, "SAS"],
+           levels = c("EUR", "SAS"),
+           direction = "<")
+auc(roc_res)
+
+roc_df <- data.frame(sensitivity = roc_res$sensitivities,
+                     specificity = roc_res$specificities)
+
+ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, 
+              linetype = "dashed", color = "darkgrey") +
+  annotate("text", x = 0.75, y = 0.25,
+           label = paste("AUC =", round(auc(roc_res), 3)),
+           size = 5) +
+  labs(title = "ROC Curve — EUR vs SAS Classification",
+       x     = "1 - Specificity (False Positive Rate)",
+       y     = "Sensitivity (True Positive Rate)") +
+  theme_minimal()
+
+# Top 20 most important SNPs (maybe not needed)
+importance_df <- data.frame(SNP = names(rf_model$variable.importance),
+                            Importance = rf_model$variable.importance) %>%
+  arrange(desc(Importance)) %>%
+  head(20) %>%
+  mutate(
+    chromosome = as.numeric(gsub("^X(\\d+)\\..*", "\\1", SNP)),
+    gene = case_when(
+      chromosome == 16 ~ "FTO",
+      chromosome == 10 ~ "TCF7L2",
+      chromosome == 8  ~ "SLC30A8"))
+
+ggplot(importance_df, aes(x = reorder(SNP, Importance), y = Importance, fill = gene)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("FTO" = "#fcb6a6",
+                               "TCF7L2" = "#cfecc9",
+                               "SLC30A8" = "#b3ceea")) +
+  coord_flip() +
+  labs(title = "Top 20 Most Important SNPs",
+       x = "SNP", 
+       y = "Gini Importance") +
+  theme_minimal()
+
+
