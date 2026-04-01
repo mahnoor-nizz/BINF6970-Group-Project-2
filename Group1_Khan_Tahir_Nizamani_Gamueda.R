@@ -32,6 +32,7 @@ vcf_slc # 5873 variants, 2504 samples
 panel <- read.table("integrated_call_samples_v3.20130502.ALL.panel", header = T)
 panel <- panel[panel$super_pop %in% c("SAS", "EUR"), ] # subset panel file to EUR and SAS
 table(panel$pop)
+table(panel$super_pop)
 
 # Check multiallelic sites
 table(elementNROWS(alt(vcf_fto))) # 56 multiallelic sites
@@ -430,7 +431,7 @@ elbow_plot <- function(pca_result, title) {
   wss <- sapply(1:10, function(k) {
     kmeans(pca_result$x[, 1:10], 
            centers = k, 
-           nstart = 25)$tot.withinss # # run 25 times with diff. starting points, keep best, then extract total within-cluster sum of squares
+           nstart = 25)$tot.withinss # run 25 times with diff. starting points, keep best, then extract total within-cluster sum of squares
   })
   data.frame(k = 1:10, wss = wss, gene = title)
 }
