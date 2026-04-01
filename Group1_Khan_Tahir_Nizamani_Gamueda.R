@@ -122,19 +122,21 @@ vcf_to_numeric <- function(gt) {
   gt <- gsub("\\|", "/", gt)
   
   # Create empty matrix
-  gt_num <- matrix(NA_real_, 
-                   nrow = nrow(gt),
+  gt_num <- matrix(nrow = nrow(gt),
                    ncol = ncol(gt),
                    dimnames = dimnames(gt))
-  
-  # Preserve attributes from original matrix
-  attr(gt_num, "pop") <- attr(gt, "pop")
-  attr(gt_num, "super_pop") <- attr(gt, "super_pop")
   
   # Convert alleles
   gt_num[gt == "0/0"] <- 0
   gt_num[gt %in% c("0/1", "1/0")] <- 1
   gt_num[gt == "1/1"] <- 2
+  
+  # Remove NA's
+  gt_num <- na.omit(gt_num)
+  
+  # Preserve attributes from original matrix
+  attr(gt_num, "pop") <- attr(gt, "pop")
+  attr(gt_num, "super_pop") <- attr(gt, "super_pop")
   
   return(gt_num)
 }
@@ -276,6 +278,10 @@ plot_hwe <- function(counts_eur, counts_sas, snp_eur, snp_sas, gene) {
                 main = paste(gene, "- SAS"))
   par(mfrow = c(1, 1))
 }
+
+# TO-DO: filter out SNPs (maybe maybe not)
+
+# TO-DO: make QQ plots
 
 # TO-DO: make plots prettier
 plot_hwe(fto_counts_eur, fto_counts_sas, fto_snp_eur, fto_snp_sas, "FTO")
@@ -500,16 +506,16 @@ rf_data$population <- as.factor(attr(fto_gt, "super_pop"))
 
 # Create training/test sets (80/20)
 set.seed(42)
-train_idx <- sample(seq_len(nrow(rf_data)), size = 0.8 * n)
+train_idx <- sample(1:nrow(rf_data), size = 0.8 * nrow(rf_data)) # may change sampling method
 
 train <- rf_data[train_idx, ]
 test <- rf_data[-train_idx, ]
 
 # Train random forest classifier
 rf_model <- ranger(population ~ .,
-                   data = train_data,
+                   data = train,
                    num.trees = 500,
-                   mtry = floor(sqrt(ncol(train_data) - 1)),
+                   #mtry = floor(sqrt(ncol(train) - 1)),
                    importance = "impurity",
                    classification = T)
 
@@ -522,6 +528,10 @@ rf_pred <- predict(rf_model,
 
 # Confusion matrix
 table(test$population, rf_pred$predictions)
+
+# Evaluation metrics
+
+# ROC-AUC curve
 
 # SNP importance
 importance(rf_model)
