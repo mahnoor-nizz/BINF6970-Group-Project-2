@@ -1,7 +1,6 @@
-### =================
+### ============================
 # BINF6970 Assignment 3
 # Analysis of genotype data from 1000 Genomes Project
-# FOR MN READ BEFORE YOU START PLEASE CHECK IN WITH US BEFORE YOU DO ANYTHING
 
 ### === PACKAGES USED ========
 library(VariantAnnotation)
@@ -280,11 +279,7 @@ plot_hwe <- function(counts_eur, counts_sas, snp_eur, snp_sas, gene) {
   par(mfrow = c(1, 1))
 }
 
-# TO-DO: filter out SNPs (maybe maybe not)
-
-# TO-DO: make QQ plots
-
-# TO-DO: make plots prettier
+# Create ternary plots
 plot_hwe(fto_counts_eur, fto_counts_sas, fto_snp_eur, fto_snp_sas, "FTO")
 plot_hwe(tcf_counts_eur, tcf_counts_sas, tcf_snp_eur, tcf_snp_sas, "TCF7L2")
 plot_hwe(slc_counts_eur, slc_counts_sas, slc_snp_eur, slc_snp_sas, "SLC30A8")
@@ -391,7 +386,6 @@ slc_scores <- build_pca_scores(slc_pca, panel, slc_var, "SLC30A8")
 head(fto_scores[, c("sample", "pop", "super_pop")])
 
 # --- PCA Plots -------
-# TO-DO: change color palette to RColorBrewer one
 # Superpopulation colours
 superpop_colours <- c("EUR" = "coral", "SAS" = "steelblue")
 
@@ -665,7 +659,7 @@ ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity, color = set)) +
        color = NULL) +
   theme_minimal()
 
-# Top 20 most important SNPs (maybe not needed)
+# Top 20 most important SNPs 
 importance_df <- data.frame(SNP = names(rf_model$variable.importance),
                             Importance = rf_model$variable.importance) %>%
   arrange(desc(Importance)) %>%
