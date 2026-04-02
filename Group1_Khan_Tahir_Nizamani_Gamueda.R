@@ -614,7 +614,6 @@ conf_mat
 
 # Evaluation metrics
 cat("Accuracy:   ", conf_mat$overall["Accuracy"], "\n")
-cat("Kappa:      ", conf_mat$overall["Kappa"], "\n")
 cat("Sensitivity:", conf_mat$byClass["Sensitivity"], "\n")
 cat("Specificity:", conf_mat$byClass["Specificity"], "\n")
 cat("Precision:  ", conf_mat$byClass["Precision"], "\n")
@@ -628,28 +627,42 @@ rf_model_prob <- ranger(population ~ .,
                         importance     = "impurity",
                         classification = TRUE,
                         probability    = TRUE)
-probs <- predict(rf_model_prob, test_data)$predictions
 
-# WIP: Create ROC-AUC curve
-roc_res <- roc(response = test_data$population,
-           predictor = probs[, "SAS"],
-           levels = c("EUR", "SAS"),
-           direction = "<")
-auc(roc_res)
+probs_train <- predict(rf_model_prob, train_data)$predictions
+probs_test <- predict(rf_model_prob, test_data)$predictions
 
-roc_df <- data.frame(sensitivity = roc_res$sensitivities,
-                     specificity = roc_res$specificities)
+# Create ROC-AUC curve for training and test sets
+roc_train <- roc(response = train_data$population,
+                 predictor = probs_train[, "SAS"],
+                 levels = c("EUR", "SAS"),
+                 direction = "<")
 
-ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity)) +
-  geom_line(color = "steelblue", linewidth = 1) +
+roc_test <- roc(response = test_data$population,
+                predictor = probs_test[, "SAS"],
+                levels = c("EUR", "SAS"),
+                direction = "<")
+
+
+cat("Training AUC:", auc(roc_train), "\n")
+cat("Test AUC:    ", auc(roc_test), "\n")
+
+# Create combined dataframe
+roc_df <- rbind(data.frame(sensitivity = roc_train$sensitivities,
+                           specificity = roc_train$specificities,
+                           set = paste0("Train (AUC = ", round(auc(roc_train), 3), ")")),
+                data.frame(sensitivity = roc_test$sensitivities,
+                           specificity = roc_test$specificities,
+                           set = paste0("Test (AUC = ",  round(auc(roc_test), 3), ")")))
+
+ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity, color = set)) +
+  geom_line(linewidth = 1) +
   geom_abline(slope = 1, intercept = 0, 
               linetype = "dashed", color = "darkgrey") +
-  annotate("text", x = 0.75, y = 0.25,
-           label = paste("AUC =", round(auc(roc_res), 3)),
-           size = 5) +
-  labs(title = "ROC Curve — EUR vs SAS Classification",
+  scale_color_manual(values = c("steelblue", "coral")) +
+  labs(title = "ROC Curves — EUR vs SAS Classification",
        x     = "1 - Specificity (False Positive Rate)",
-       y     = "Sensitivity (True Positive Rate)") +
+       y     = "Sensitivity (True Positive Rate)",
+       color = NULL) +
   theme_minimal()
 
 # Top 20 most important SNPs (maybe not needed)
@@ -659,12 +672,12 @@ importance_df <- data.frame(SNP = names(rf_model$variable.importance),
   head(20) %>%
   mutate(
     chromosome = as.numeric(gsub("^X(\\d+)\\..*", "\\1", SNP)),
-    gene = case_when(
+    Gene = case_when(
       chromosome == 16 ~ "FTO",
       chromosome == 10 ~ "TCF7L2",
       chromosome == 8  ~ "SLC30A8"))
 
-ggplot(importance_df, aes(x = reorder(SNP, Importance), y = Importance, fill = gene)) +
+ggplot(importance_df, aes(x = reorder(SNP, Importance), y = Importance, fill = Gene)) +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = c("FTO" = "#fcb6a6",
                                "TCF7L2" = "#cfecc9",
