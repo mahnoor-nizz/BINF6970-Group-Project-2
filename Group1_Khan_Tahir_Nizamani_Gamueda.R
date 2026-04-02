@@ -312,6 +312,7 @@ ibs_check <- function(snp_mat) {
 ibs_check(fto_snp)
 ibs_check(tcf_snp)
 ibs_check(slc_snp)
+# Many possible related pairs, likely due to some samples being parent/child and/or IBS being used only with 3 genes
 
 # --- Exploratory PCA -------
 # Function to prepare genotype matrix for PCA
