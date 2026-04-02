@@ -60,7 +60,7 @@ slc_filtered # 534 variants
 
 
 ### === Exploratory Data Analysis ========
-# --- Allele frequency histograms -------
+# --- Allele Frequency Histograms -------
 # Extract SAS and EUR AF for each gene into dataframes
 make_eda_df <- function(vcf_filtered, gene) {
   vcf_filtered %>%
@@ -189,7 +189,6 @@ slc_snp_eur <- gt_to_snp(slc_gt, pop = "EUR")
 slc_snp_sas <- gt_to_snp(slc_gt, pop = "SAS")
 slc_snp <- gt_to_snp(slc_gt)
 
-
 # Function to compute LD and plot heatmap
 plot_ld <- function(snp_matrix, gene_name) {
   # Compute R squared
@@ -284,7 +283,7 @@ plot_hwe(fto_counts_eur, fto_counts_sas, fto_snp_eur, fto_snp_sas, "FTO")
 plot_hwe(tcf_counts_eur, tcf_counts_sas, tcf_snp_eur, tcf_snp_sas, "TCF7L2")
 plot_hwe(slc_counts_eur, slc_counts_sas, slc_snp_eur, slc_snp_sas, "SLC30A8")
 
-# --- Independence of observations check -----
+# --- Independence of Observations Check -----
 # Function to check if samples are unrelated via identity by descent
 ibs_check <- function(snp_mat) {
   # Create IBS matrix
@@ -437,7 +436,6 @@ plot_pca_subpop <- function(scores, var_exp, gene_name) {
   plot_annotation(title = "PCA - EUR vs SAS Superpopulations") &
   theme(legend.position = "bottom")
 
-
 # Plot subpopulations per gene
 (plot_pca_subpop(fto_scores, fto_var, "FTO") +
   plot_pca_subpop(tcf_scores, tcf_var, "TCF7L2") +
@@ -577,9 +575,9 @@ rf_data$population <- as.factor(panel_unrel$super_pop[match(rownames(rf_data), p
 # Clean column names
 colnames(rf_data) <- make.names(colnames(rf_data))
 
-# Create training/test sets (80/20)
+# Create training/test sets (70/30)
 set.seed(42)
-train_idx <- createDataPartition(rf_data$population, p = 0.8, list = F)
+train_idx <- createDataPartition(rf_data$population, p = 0.7, list = F)
 
 train_data <- rf_data[train_idx, ]
 test_data <- rf_data[-train_idx, ]
@@ -598,7 +596,6 @@ rf_pred <- predict(rf_model,
                    num.trees = 500,
                    type = "response")
 predictions <- rf_pred$predictions
-
 
 # Confusion matrix
 conf_mat <- confusionMatrix(factor(predictions),
@@ -636,7 +633,6 @@ roc_test <- roc(response = test_data$population,
                 levels = c("EUR", "SAS"),
                 direction = "<")
 
-
 cat("Training AUC:", auc(roc_train), "\n")
 cat("Test AUC:    ", auc(roc_test), "\n")
 
@@ -648,6 +644,7 @@ roc_df <- rbind(data.frame(sensitivity = roc_train$sensitivities,
                            specificity = roc_test$specificities,
                            set = paste0("Test (AUC = ",  round(auc(roc_test), 3), ")")))
 
+# Plot of ROC-AUC curves
 ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity, color = set)) +
   geom_line(linewidth = 1) +
   geom_abline(slope = 1, intercept = 0, 
@@ -659,7 +656,7 @@ ggplot(roc_df, aes(x = 1 - specificity, y = sensitivity, color = set)) +
        color = NULL) +
   theme_minimal()
 
-# Top 20 most important SNPs 
+# Combine importance scores into dataframe
 importance_df <- data.frame(SNP = names(rf_model$variable.importance),
                             Importance = rf_model$variable.importance) %>%
   arrange(desc(Importance)) %>%
@@ -671,6 +668,7 @@ importance_df <- data.frame(SNP = names(rf_model$variable.importance),
       chromosome == 10 ~ "TCF7L2",
       chromosome == 8  ~ "SLC30A8"))
 
+# Plot of most important SNPs
 ggplot(importance_df, aes(x = reorder(SNP, Importance), y = Importance, fill = Gene)) +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = c("FTO" = "#fcb6a6",
