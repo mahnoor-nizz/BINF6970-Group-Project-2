@@ -101,7 +101,8 @@ ggplot(all_eda_long, aes(x = AF, fill = population)) +
   labs(
     title = "Allele Frequency Distribution",
     x = "Allele Frequency", y = "Count"
-  )
+  ) +
+  theme_minimal()
 
 # --- Linkage Disequilibrium Structure -------
 # Function to annotate subpopulations and generate genotype matrix
