@@ -623,7 +623,7 @@ rf_model_prob <- ranger(population ~ .,
 probs_train <- predict(rf_model_prob, train_data)$predictions
 probs_test <- predict(rf_model_prob, test_data)$predictions
 
-# Create ROC-AUC curve for training and test sets
+# Create ROC objects for training and test sets
 roc_train <- roc(response = train_data$population,
                  predictor = probs_train[, "SAS"],
                  levels = c("EUR", "SAS"),
@@ -634,10 +634,48 @@ roc_test <- roc(response = test_data$population,
                 levels = c("EUR", "SAS"),
                 direction = "<")
 
-cat("Training AUC:", auc(roc_train), "\n")
-cat("Test AUC:    ", auc(roc_test), "\n")
+cat("Training AUC:", auc(roc_train), "\n") # Perfect classifier, so need to cross-validate to see if overfitting is happening
+cat("Test AUC:", auc(roc_test), "\n")
 
-# Create combined dataframe
+# Create tuning grid for cross-validation
+grid <- expand.grid(mtry = c(10, 20, 50, floor(sqrt(ncol(train_data) - 1)), 100),
+                    splitrule = "gini",
+                    min.node.size = c(1, 5, 10, 20, 50))
+
+# Create training control for cross-validation
+cv <- trainControl(method = "cv",
+                   number = 5,
+                   classProbs = T,
+                   summaryFunction = twoClassSummary)
+
+# Run cross-validation
+rf_cv <- train(population ~ .,
+               data = train_data,
+               method = "ranger",
+               metric = "ROC",
+               tuneGrid = grid,
+               trControl = cv,
+               num.trees = 500)
+rf_cv$bestTune # mtry = 100, min.node.size = 5
+
+# Train new model based on cross-validated parameters
+rf_model_cv <- ranger(population ~ .,
+                      data           = train_data,
+                      num.trees      = 500,
+                      mtry           = 100,
+                      importance     = "impurity",
+                      classification = TRUE,
+                      probability    = TRUE,
+                      min.node.size = 5)
+
+roc_cv <- roc(response = train_data$population,
+              predictor = (predict(rf_model_cv, train_data)$predictions[, "SAS"]),
+              levels = c("EUR", "SAS"),
+              direction = "<")
+cat("Training AUC after CV:", auc(roc_cv), "\n")
+# Training AUC is still 1, suggesting that model is not overfitting to training data, but rather learning population structure
+
+# Create combined dataframe for ROC-AUC curves of training and test sets
 roc_df <- rbind(data.frame(sensitivity = roc_train$sensitivities,
                            specificity = roc_train$specificities,
                            set = paste0("Train (AUC = ", round(auc(roc_train), 3), ")")),
